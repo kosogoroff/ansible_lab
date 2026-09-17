@@ -1,0 +1,75 @@
+---
+- name: NGINX | Install and configure NGINX (Universal + SELinux)
+  hosts: nginx
+  become: true
+  vars:
+    nginx_listen_port: 8080
+    nginx_service_name: nginx
+
+  tasks:
+    # --- Обновление кэша только для Debian/Ubuntu ---
+    - name: Update package cache (Debian/Ubuntu family)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      tags:
+        - update-cache
+
+    # --- Установка NGINX с учётом пакетного менеджера ---
+    - name: NGINX | Install NGINX
+      block:
+        - name: Install NGINX via yum/dnf (RedHat family)
+          yum:
+            name: nginx
+            state: latest
+          when: ansible_os_family == "RedHat"
+          notify:
+            - restart nginx
+
+        - name: Install NGINX via apt (Debian family)
+          apt:
+            name: nginx
+            state: latest
+            update_cache: no
+          when: ansible_os_family == "Debian"
+          notify:
+            - restart nginx
+      tags:
+        - nginx-package
+
+    # --- Конфигурация через шаблон ---
+    - name: NGINX | Create NGINX config file from template
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/nginx.conf
+        owner: root
+        group: root
+        mode: "0644"
+        backup: yes
+      notify:
+        - reload nginx
+      register: nginx_conf_result
+      tags:
+        - nginx-configuration
+
+    # --- SELinux: восстановление контекста ТОЛЬКО для RedHat-семейства ---
+    - name: SELinux | Restore context for nginx.conf (RedHat only)
+      command: restorecon -v /etc/nginx/nginx.conf
+      when:
+        - ansible_os_family == "RedHat"
+        - nginx_conf_result.changed | default(false)
+      tags:
+        - selinux
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: "{{ nginx_service_name }}"
+        state: restarted
+        enabled: yes
+
+    - name: reload nginx
+      systemd:
+        name: "{{ nginx_service_name }}"
+        state: reloaded
